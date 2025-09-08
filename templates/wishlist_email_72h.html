@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Última oportunidad</title>
+  </head>
+
+  <body style="margin:0;background:#f3f4f6;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f3f4f6;padding:20px 0;">
+      <tr>
+        <td align="center">
+          <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="width:600px;max-width:600px;background:#ffffff;border-radius:10px;overflow:hidden;font-family:Arial,Helvetica,sans-serif;">
+            
+            <!-- Header -->
+            <tr>
+              <td align="left" style="padding:18px 24px;background:#ffffff;border-bottom:1px solid #e5e7eb;">
+                <img src="${LOGO_URL}" width="140" alt="Curren México" style="display:block;border:0">
+              </td>
+            </tr>
+
+            <!-- Red band title -->
+            <tr>
+              <td style="background:#b91c1c;color:#ffffff;padding:22px 24px;" align="left">
+                <h1 style="margin:0;font-size:22px;line-height:28px;font-weight:800;">
+                  Última oportunidad ⏰ Se están agotando
+                </h1>
+              </td>
+            </tr>
+
+            <!-- Body -->
+            <tr>
+              <td style="padding:18px 24px;color:#111827;font-size:15px;line-height:22px;">
+                <p style="margin:0 0 14px 0;">Hola,</p>
+                <p style="margin:0 0 18px 0;">
+                  Este es el último recordatorio. Si todavía quieres alguno de tus relojes favoritos, 
+                  <strong>debes actuar ahora</strong>. Después de hoy ya no podremos garantizar ni disponibilidad ni descuento.
+                </p>
+
+                <!-- Products grid -->
+                ${PRODUCTS}
+
+                <!-- Scarcity (red) -->
+                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:16px 0 0 0;">
+                  <tr>
+                    <td>
+                      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #fecaca;background:#fff1f2;border-radius:10px;">
+                        <tr>
+                          <td style="padding:12px 14px;color:#7f1d1d;font-size:13px;line-height:18px;">
+                            <strong>⚠️ Últimas piezas:</strong> algunos modelos podrían agotarse <strong>HOY</strong>.
+                          </td>
+                        </tr>
+                      </table>
+                    </td>
+                  </tr>
+
+                  <tr><td style="height:10px;line-height:10px;font-size:0;">&nbsp;</td></tr>
+
+                  <!-- Coupon -->
+                  <tr>
+                    <td>
+                      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px dashed #ef4444;background:#fef2f2;border-radius:10px;">
+                        <tr>
+                          <td align="center" style="padding:14px 16px;">
+                            <div style="font-size:14px;color:#111827;line-height:20px;margin:0 0 8px 0;">
+                              🎁 <strong>CUPÓN: INICIA10</strong>
+                            </div>
+                            <div style="font-size:13px;color:#7f1d1d;line-height:18px;margin:0 0 6px 0;">
+                              ⏰ Expira <strong>hoy a la medianoche</strong>
+                            </div>
+                            <div style="font-size:13px;color:#7f1d1d;line-height:18px;">
+                              📋 Pégalo en el checkout para activarlo
+                            </div>
+                          </td>
+                        </tr>
+                      </table>
+                    </td>
+                  </tr>
+                </table>
+
+                <!-- CTA -->
+                <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="margin:18px 0 8px 0;">
+                  <tr>
+                    <td align="center">
+                      <table role="presentation" cellpadding="0" cellspacing="0">
+                        <tr>
+                          <td bgcolor="#b91c1c" style="border-radius:8px;" align="center">
+                            <a href="${WISHLIST_LINK}" target="_blank"
+                               style="display:inline-block;padding:14px 28px;color:#ffffff;text-decoration:none;font-weight:700;font-size:16px;border-radius:8px;">
+                              🚨 Última llamada: compra tus relojes favoritos ahora 🚨
+                            </a>
+                          </td>
+                        </tr>
+                      </table>
+                    </td>
+                  </tr>
+                </table>
+
+                <!-- Fallback link -->
+                <p style="margin:12px 0 0 0;font-size:12px;color:#6b7280;word-break:break-all;" align="center">
+                  Si el botón no funciona, copia y pega este enlace:<br>
+                  <a href="${WISHLIST_LINK}" style="color:#d50000;text-decoration:underline;" target="_blank">${WISHLIST_LINK}</a>
+                </p>
+              </td>
+            </tr>
+
+            <!-- Footer -->
+            <tr>
+              <td style="background:#f9fafb;color:#6b7280;font-size:12px;line-height:18px;padding:16px 24px;" align="center">
+                © ${YEAR} Curren México. Todos los derechos reservados.
+              </td>
+            </tr>
+
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>
