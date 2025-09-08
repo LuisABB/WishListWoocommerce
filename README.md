@@ -1,111 +1,147 @@
-# 📧 Wishlist Reminder – TI WooCommerce Wishlist (DB version)
+# Wishlist Reminder Worker
 
-Este script en Python 3 se conecta directamente a la base de datos de WordPress/WooCommerce para detectar listas de deseos creadas con el plugin **TI WooCommerce Wishlist**.
+Este proyecto implementa un **worker en Python** que envía correos automáticos de recordatorio a los usuarios que han guardado productos en su lista de deseos (wishlist).
 
-Envía un correo recordatorio automático a los usuarios que añadieron un producto a su lista de deseos hace **24–48 horas**, animándolos a completar su compra.
+## 🚀 Características principales
+- Envía recordatorios en 3 etapas:
+  - **24h**: recordatorio emocional (tono suave).
+  - **48h**: incentivo con cupón de descuento.
+  - **72h**: último recordatorio con urgencia.
+- Compatible con **modo relativo** o **modo fijo 8AM** (recomendado para producción).
+- Evita reenvíos mediante tabla de log en MySQL (`wp_wishlist_email_log`).
+- Renderiza plantillas HTML con los productos guardados, enlaces y cupón.
 
----
-
-## 🚀 Funcionalidad
-
-- Se conecta a MySQL/MariaDB usando `pymysql`.
-- Detecta wishlists con productos añadidos hace entre 24 y 48 horas.
-- Obtiene el email del usuario (`wp_users.user_email` o datos guardados en el plugin).
-- Envía un correo recordatorio en texto plano vía SMTP.
-- Registra los envíos en la tabla `wp_wishlist_reminder_log` para evitar duplicados.
-- Compatible con usuarios registrados e invitados.
-
----
-
-## 📦 Requisitos
-
-- Python 3.9+
-- Dependencias:
-
-```bash
-pip install pymysql
-```
-
----
+## 📂 Estructura
+- `wishlist_reminder.py` → worker principal.
+- `templates/` → plantillas HTML (`wishlist_email_24h.html`, `wishlist_email_48h.html`, `wishlist_email_72h.html`).
+- `.env` → variables de configuración (DB, SMTP, etc.).
 
 ## ⚙️ Configuración
 
-Edita las variables de entorno o modifica las constantes al inicio del script:
+1. Crea un archivo `.env` en la raíz del proyecto con las variables necesarias:
 
-### 🔑 Base de datos (WordPress)
-```
+```env
+# Base de datos
 DB_HOST=127.0.0.1
 DB_PORT=3306
-DB_USER=wp_user
-DB_PASS=wp_password
-DB_NAME=wordpress
-TABLE_PREFIX=wp_
-```
+DB_USER=root
+DB_PASS=
+DB_NAME=relojesc_relob
 
-### 📧 SMTP
-```
+# SMTP
 SMTP_HOST=smtp.gmail.com
 SMTP_PORT=587
-SMTP_USER=tu_correo@dominio.com
-SMTP_PASS=tu_app_password
-FROM_EMAIL=ventas@tudominio.com
+SMTP_USER=tu_correo@gmail.com
+SMTP_PASS=tu_password
 FROM_NAME="Curren México"
+FROM_EMAIL=tu_correo@gmail.com
+
+# URL base de la tienda
+WISHLIST_URL=https://www.relojescurrenmexico.com.mx
+
+# Control de campaña
+FIXED_8AM_MODE=true
+LOCAL_TZ_OFFSET=-06:00
+COOLDOWN_HOURS=168
+MAX_BATCH=300
+SEND_EMAILS=true
 ```
 
-### 🌐 URLs
-```
-STORE_NAME="Curren México"
-CATALOG_URL="https://www.relojescurrenmexico.com.mx/tienda"
-WISHLIST_URL="https://www.relojescurrenmexico.com.mx/wishlist/"
-WHATSAPP_URL="https://wa.me/5210000000000"
-```
+2. Instala dependencias:
 
----
-
-## ▶️ Ejecución
-
-### Simulación (sin enviar emails)
 ```bash
-python wishlist_reminder_db.py --dry-run
+pip install -r requirements.txt
 ```
 
-### Ejecución real
-```bash
-python wishlist_reminder_db.py
+Dependencias principales:
+- `pymysql`
+- `python-dotenv`
+
+## 🗄️ Base de datos
+
+Tabla de log para evitar reenvíos:
+
+```sql
+CREATE TABLE IF NOT EXISTS wp_wishlist_email_log (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  email VARCHAR(255) NOT NULL,
+  wishlist_id BIGINT UNSIGNED NOT NULL,
+  campaign_key VARCHAR(64) NOT NULL,
+  sent_at DATETIME NOT NULL,
+  UNIQUE KEY uniq_email_wl (email, wishlist_id),
+  KEY idx_email (email),
+  KEY idx_sent_at (sent_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 ```
 
----
+👉 Cada fila mantiene el último envío por `email+wishlist_id`.  
+👉 `campaign_key` y `sent_at` se actualizan en cada envío.
 
-## 🔄 Automatización
+## ▶️ Ejecución local
 
-Programa el script en `cron` o **Task Scheduler** para ejecutarlo cada 1–3 horas.
+Ejemplo en PowerShell para probar cada etapa:
 
-Ejemplo en cron (ejecutar cada 2 horas):
-
+### 24 horas
+```powershell
+$env:STAGE="24"; `
+$env:TARGET_HOURS="24"; `
+$env:CAMPAIGN_KEY="wishlist_v1_24h"; `
+$env:TEMPLATE_FILE="templates/wishlist_email_24h.html"; `
+$env:SUBJECT="Tu reloj favorito te espera ⌚"; `
+python .\wishlist_reminder.py
 ```
-0 */2 * * * /usr/bin/python3 /ruta/wishlist_reminder_db.py >> /var/log/wishlist_reminder.log 2>&1
+
+```SQL
+UPDATE wp_wishlist_guest_emails
+SET created_at = CONCAT(DATE_SUB(CURDATE(), INTERVAL 1 DAY), ' 12:00:00')
+WHERE email='bettoapellido@gmail.com' AND wishlist_id=4;
 ```
 
+### 48 horas
+```powershell
+$env:STAGE="48"; `
+$env:TARGET_HOURS="48"; `
+$env:CAMPAIGN_KEY="wishlist_v1_48h"; `
+$env:TEMPLATE_FILE="templates/wishlist_email_48h.html"; `
+$env:SUBJECT="Aún estás a tiempo — 10% OFF termina pronto"; `
+python .\wishlist_reminder.py
+```
+
+```SQL
+UPDATE wp_wishlist_guest_emails
+SET created_at = CONCAT(DATE_SUB(CURDATE(), INTERVAL 2 DAY), ' 12:00:00')
+WHERE email='bettoapellido@gmail.com' AND wishlist_id=4;
+```
+
+### 72 horas
+```powershell
+$env:STAGE="72"; `
+$env:TARGET_HOURS="72"; `
+$env:CAMPAIGN_KEY="wishlist_v1_72h"; `
+$env:TEMPLATE_FILE="templates/wishlist_email_72h.html"; `
+$env:SUBJECT="Última oportunidad ⏰"; `
+python .\wishlist_reminder.py
+```
+```SQL
+UPDATE wp_wishlist_guest_emails
+SET created_at = CONCAT(DATE_SUB(CURDATE(), INTERVAL 3 DAY), ' 12:00:00')
+WHERE email='bettoapellido@gmail.com' AND wishlist_id=4;
+```
+
+## 🕒 Producción (CRON)
+
+Ejecutar diariamente a las 8AM (hora CDMX):
+
+```cron
+0 8 * * * STAGE=24 TARGET_HOURS=24 CAMPAIGN_KEY=wishlist_v1_24h TEMPLATE_FILE=templates/wishlist_email_24h.html SUBJECT="Tu reloj favorito te espera ⌚" python /ruta/wishlist_reminder.py
+0 8 * * * STAGE=48 TARGET_HOURS=48 CAMPAIGN_KEY=wishlist_v1_48h TEMPLATE_FILE=templates/wishlist_email_48h.html SUBJECT="Aún estás a tiempo — 10% OFF termina pronto" python /ruta/wishlist_reminder.py
+0 8 * * * STAGE=72 TARGET_HOURS=72 CAMPAIGN_KEY=wishlist_v1_72h TEMPLATE_FILE=templates/wishlist_email_72h.html SUBJECT="Última oportunidad ⏰" python /ruta/wishlist_reminder.py
+```
+
+## 📧 Flujo de correos
+
+- **24h** → recordatorio emocional + disponibilidad.  
+- **48h** → incentivo de compra con cupón.  
+- **72h** → urgencia: última llamada antes de perder el descuento.
+
 ---
-
-## 📊 Lógica del envío
-
-- **Ventana de tiempo**: entre 24h y 48h después de la primera adición a la wishlist.
-- **Control**: tabla `wp_wishlist_reminder_log` (se crea automáticamente si no existe).
-- **Un envío por wishlist** (no repite).
-
----
-
-## ✨ Personalización
-
-- Puedes cambiar el texto del correo en la función `build_email()`.
-- Puedes unir `product_id` con `wp_posts` para incluir el nombre real del producto y/o su imagen.
-- Puedes ajustar la ventana de envío modificando `MIN_DELAY` y `MAX_DELAY`.
-
----
-
-## ⚠️ Notas importantes
-
-- Asegúrate de que tu política de privacidad permita este tipo de comunicaciones.
-- Revisa que tu servidor SMTP (ej. Gmail, SendGrid, Amazon SES) soporte el volumen de correos que planeas enviar.
-- Haz pruebas con `--dry-run` antes de habilitar el envío real.
