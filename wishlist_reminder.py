@@ -5,22 +5,30 @@ Worker para enviar recordatorios por wishlist (24/48/72h).
 
 Características:
 - Ventanas relativas (TARGET_HOURS ± WINDOW_TOLERANCE_H) o modo "8:00 am fijo" por fecha local (CDMX).
-- Cooldown por campaña (no reenvía si ya se envió recientemente esa misma campaign_key).
+- Bloqueo permanente por campaign_key: si ya se envió esa campaign_key alguna vez a ese email+wishlist,
+  NO se vuelve a enviar (independiente de COOLDOWN_HOURS).
 - Requiere que la wishlist tenga al menos 1 item.
 - Render de plantilla HTML con grid básico de productos y link a la wishlist.
 """
 
 import os
 import sys
-import uuid
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.header import Header
+from email.utils import formataddr, make_msgid
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
-import pymysql
-load_dotenv()
+from pathlib import Path
+from urllib.parse import urlparse
 
+# DB: mysql-connector-python (con socket)
+import mysql.connector as mysql
+
+# Carga .env ubicado junto al script
+ENV_PATH = Path(__file__).with_name(".env")
+load_dotenv(ENV_PATH)
 
 # -----------------------
 # Utilidades de consola
@@ -38,18 +46,15 @@ def logsafe(s):
 def _now_utc():
     return datetime.now(timezone.utc)
 
-
 # -----------------------
 # Configuración (ENV)
 # -----------------------
 
-DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_USER = os.getenv("DB_USER", "root")
 DB_PASS = os.getenv("DB_PASSWORD", "")
 DB_NAME = os.getenv("DB_NAME", "relojesc_relob")
-DB_PORT = int(os.getenv("DB_PORT", "3306"))
-
-TABLE_PREFIX = os.getenv("TABLE_PREFIX", "wp_")  # 'wp_' por defecto
+DB_SOCKET = os.getenv("DB_SOCKET")  # /var/lib/mysql/mysql.sock
+TABLE_PREFIX = os.getenv("TABLE_PREFIX", "wp_")
 
 # SMTP
 SMTP_HOST = os.getenv("SMTP_HOST", "")
@@ -59,15 +64,15 @@ SMTP_PASS = os.getenv("SMTP_PASS", "")
 SMTP_USE_SSL = os.getenv("SMTP_USE_SSL", "false").strip().lower() == "true"
 
 FROM_EMAIL = os.getenv("FROM_EMAIL", SMTP_USER or "no-reply@example.com")
-FROM_NAME = os.getenv("FROM_NAME", "Relojes Curren México")
-REPLY_TO = os.getenv("REPLY_TO", FROM_EMAIL)
+FROM_NAME  = os.getenv("FROM_NAME", "Relojes Curren México")
+REPLY_TO   = os.getenv("REPLY_TO", FROM_EMAIL)
 
 # Control de campaña/etapa
 STAGE = int(os.getenv("STAGE", "24"))  # 24 / 48 / 72
 TARGET_HOURS = int(os.getenv("TARGET_HOURS", str(STAGE)))
 WINDOW_TOLERANCE_H = int(os.getenv("WINDOW_TOLERANCE_H", "6"))
 CAMPAIGN_KEY = os.getenv("CAMPAIGN_KEY", f"wishlist_v1_{STAGE}h")
-COOLDOWN_HOURS = int(os.getenv("COOLDOWN_HOURS", "168"))  # 7 días
+COOLDOWN_HOURS = int(os.getenv("COOLDOWN_HOURS", "168"))  # 7 días (ya no se usa para filtrar, queda por compatibilidad)
 
 MAX_BATCH = int(os.getenv("MAX_BATCH", "300"))
 SEND_EMAILS = os.getenv("SEND_EMAILS", "false").strip().lower() == "true"
@@ -88,22 +93,22 @@ if not WISHLIST_URL:
 # Placeholder para imágenes faltantes
 PLACEHOLDER_IMG = os.getenv("PLACEHOLDER_IMG", "https://via.placeholder.com/300x300?text=Producto")
 
-
 # -----------------------
 # MySQL helpers
 # -----------------------
 
 def mysql_conn():
-    conn = pymysql.connect(
-        host=DB_HOST, user=DB_USER, password=DB_PASS, database=DB_NAME,
-        port=DB_PORT, charset="utf8mb4", cursorclass=pymysql.cursors.DictCursor,
+    conn = mysql.connect(
+        user=DB_USER,
+        password=DB_PASS,
+        database=DB_NAME,
+        unix_socket=DB_SOCKET,   # usar socket como en el test OK
         autocommit=True
     )
-    with conn.cursor() as cur:
+    with conn.cursor(dictionary=True) as cur:
         # Normaliza zona del lado servidor a UTC
         cur.execute("SET time_zone = '+00:00'")
     return conn
-
 
 def parse_tz_offset_to_delta(tz_str: str) -> timedelta:
     """
@@ -113,7 +118,6 @@ def parse_tz_offset_to_delta(tz_str: str) -> timedelta:
     sign = -1 if s.startswith("-") else 1
     hh, mm = s.lstrip("+-").split(":")
     return sign * timedelta(hours=int(hh), minutes=int(mm))
-
 
 # -----------------------
 # Cálculo de ventanas
@@ -129,7 +133,6 @@ def stage_window_bounds_relative() -> tuple[datetime, datetime]:
     end = now - timedelta(hours=(TARGET_HOURS - WINDOW_TOLERANCE_H))
     return start, end
 
-
 def day_bounds_utc_for_target_fixed_8am(target_hours: int, tz_offset_str: str = "-06:00") -> tuple[datetime, datetime]:
     """
     Ventana “8 am fijo” por DÍA LOCAL:
@@ -141,20 +144,18 @@ def day_bounds_utc_for_target_fixed_8am(target_hours: int, tz_offset_str: str = 
     days_back = max(1, target_hours // 24)  # 24=>1, 48=>2, 72=>3
     offset = parse_tz_offset_to_delta(tz_offset_str)
 
-    # 1) ahora en HORA LOCAL
+    # ahora en HORA LOCAL
     now_local = _now_utc() + offset
     target_local_date = now_local.date() - timedelta(days=days_back)
 
-    # 2) límites del DÍA LOCAL
+    # límites del DÍA LOCAL
     start_local = datetime.combine(target_local_date, datetime.min.time())
     end_local   = datetime.combine(target_local_date, datetime.max.time())
 
-    # 3) convertir a UTC restando el offset
+    # convertir a UTC restando el offset
     start_utc = (start_local - offset).replace(tzinfo=timezone.utc)
     end_utc   = (end_local   - offset).replace(tzinfo=timezone.utc)
     return start_utc, end_utc
-
-
 
 def compute_window() -> tuple[datetime, datetime, str]:
     if FIXED_8AM_MODE:
@@ -164,12 +165,9 @@ def compute_window() -> tuple[datetime, datetime, str]:
         s, e = stage_window_bounds_relative()
         return s, e, "relative"
 
-
 # -----------------------
 # Helpers de plantilla / URLs
 # -----------------------
-
-from urllib.parse import urlparse
 
 def _base_url() -> str:
     """
@@ -186,11 +184,9 @@ def _base_url() -> str:
         )
     return url
 
-
 def load_template(path: str) -> str:
     with open(path, "r", encoding="utf-8") as f:
         return f.read()
-
 
 def render_products_html(conn, wishlist_id: int) -> str:
     """
@@ -205,7 +201,7 @@ def render_products_html(conn, wishlist_id: int) -> str:
         LIMIT 6
     """
     products = []
-    with conn.cursor() as cur:
+    with conn.cursor(dictionary=True) as cur:
         cur.execute(sql, (wishlist_id,))
         products = cur.fetchall() or []
 
@@ -213,7 +209,7 @@ def render_products_html(conn, wishlist_id: int) -> str:
         return ""
 
     cards = []
-    with conn.cursor() as cur:
+    with conn.cursor(dictionary=True) as cur:
         for row in products:
             pid = row["product_id"]
 
@@ -285,11 +281,9 @@ def render_products_html(conn, wishlist_id: int) -> str:
         </table>
         """.strip()
 
-
 def wishlist_link(wishlist_id: int) -> str:
     base = _base_url()
     return f"{base}/lista-de-deseos/?wl={wishlist_id}"
-
 
 def render_template(conn, wishlist_id: int, base_html: str) -> str:
     products_html = render_products_html(conn, wishlist_id)
@@ -311,46 +305,66 @@ def render_template(conn, wishlist_id: int, base_html: str) -> str:
         html = html.replace(f"${{{k}}}", v)
     return html
 
-
 # -----------------------
 # SMTP / envío
 # -----------------------
 
 def send_email(to_email: str, subject: str, html: str) -> str:
     """
-    Envía correo usando SMTP. Devuelve un message_id generado (uuid).
+    Envía correo usando SMTP. Devuelve el Message-ID asignado.
+    Mejora de entregabilidad:
+      - multipart/alternative (texto plano + HTML)
+      - Subject codificado en UTF-8
+      - Message-ID propio del dominio y Reply-To
+      - (Opcional) List-Unsubscribe si hay URL
     """
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"] = f"{FROM_NAME} <{FROM_EMAIL}>"
-    msg["To"] = to_email
-    if REPLY_TO:
-        msg.add_header("Reply-To", REPLY_TO)
+    # 1) Construcción del mensaje multipart
+    alt = MIMEMultipart("alternative")
+    alt["From"] = formataddr((FROM_NAME, FROM_EMAIL))
+    alt["To"]   = to_email
+    alt["Subject"] = str(Header(subject, "utf-8"))
+    alt["Message-ID"] = make_msgid(domain=FROM_EMAIL.split("@")[-1])
+    alt["Reply-To"]   = formataddr((FROM_NAME, FROM_EMAIL))
 
-    part_html = MIMEText(html, "html", "utf-8")
-    msg.attach(part_html)
+    # List-Unsubscribe (opcional pero recomendado)
+    try:
+        base = _base_url()
+        alt["List-Unsubscribe"] = f"<mailto:{FROM_EMAIL}>, <{base}?unsubscribe=1>"
+    except Exception:
+        pass
 
-    message_id = f"<{uuid.uuid4()}@wishlist.local>"
-    msg["Message-ID"] = message_id
+    # 2) Partes: texto plano + HTML (mejora filtros)
+    plain = (
+        "Hola,\n\n"
+        "Dejaste productos en tu wishlist. "
+        "Te compartimos el enlace para retomarla.\n\n"
+        "Gracias."
+    )
+    alt.attach(MIMEText(plain, "plain", "utf-8"))
+    alt.attach(MIMEText(html,  "html",  "utf-8"))
 
+    print(f"[SMTP] host={SMTP_HOST} port={SMTP_PORT} ssl={SMTP_USE_SSL} user={SMTP_USER}")
+    print(f"[SMTP] msgid={alt['Message-ID']} to={to_email}")
+
+    # 3) Conexión y envío
     if SMTP_USE_SSL or SMTP_PORT == 465:
-        server = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=20)
-        server.login(SMTP_USER, SMTP_PASS)
-        server.sendmail(FROM_EMAIL, [to_email], msg.as_string())
-        server.quit()
+        server = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=25)
     else:
-        server = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20)
+        server = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=25)
         server.ehlo()
         try:
             server.starttls()
         except Exception:
             pass
+
+    if SMTP_USER:
         server.login(SMTP_USER, SMTP_PASS)
-        server.sendmail(FROM_EMAIL, [to_email], msg.as_string())
-        server.quit()
 
-    return message_id
+    rejected = server.sendmail(FROM_EMAIL, [to_email], alt.as_string())
+    print(f"[SMTP] rejected={rejected}")  # {} == aceptado por el servidor
+    server.quit()
 
+    return alt["Message-ID"]
 
 # -----------------------
 # Selección de candidatos y log
@@ -360,7 +374,9 @@ def select_candidates(conn, start_utc: datetime, end_utc: datetime) -> list[dict
     """
     Selecciona candidatos dentro de la ventana [start_utc, end_utc] (UTC),
     corrigiendo created_at con el offset local almacenado (-06:00 -> +00:00).
-    Respeta cooldown por campaign_key.
+    Bloqueo PERMANENTE por campaign_key:
+      - Si ya existe en wp_wishlist_email_log una fila con la MISMA campaign_key
+        para ese email+wishlist, NO se envía de nuevo (independiente de fecha).
     """
     sql = f"""
         SELECT DISTINCT e.email, wl.ID AS wishlist_id
@@ -368,17 +384,14 @@ def select_candidates(conn, start_utc: datetime, end_utc: datetime) -> list[dict
         JOIN {TABLE_PREFIX}tinvwl_lists wl  ON wl.ID = e.wishlist_id
         JOIN {TABLE_PREFIX}tinvwl_items it  ON it.wishlist_id = wl.ID
         LEFT JOIN {TABLE_PREFIX}wishlist_email_log log_same
-          ON  log_same.email       = e.email
-          AND log_same.wishlist_id = wl.ID
-          AND log_same.campaign_key= %s
+          ON  log_same.email        = e.email
+          AND log_same.wishlist_id  = wl.ID
+          AND log_same.campaign_key = %s
         WHERE CONVERT_TZ(e.created_at, %s, '+00:00') BETWEEN %s AND %s
-          AND (
-                log_same.wishlist_id IS NULL
-                OR log_same.sent_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL %s HOUR)
-              )
+          AND log_same.wishlist_id IS NULL   -- <- bloqueo permanente por campaign_key
         LIMIT %s
     """
-    with conn.cursor() as cur:
+    with conn.cursor(dictionary=True) as cur:
         cur.execute(
             sql,
             (
@@ -386,13 +399,11 @@ def select_candidates(conn, start_utc: datetime, end_utc: datetime) -> list[dict
                 LOCAL_TZ_OFFSET,  # asumiendo created_at guardado en hora local
                 start_utc.strftime("%Y-%m-%d %H:%M:%S"),
                 end_utc.strftime("%Y-%m-%d %H:%M:%S"),
-                COOLDOWN_HOURS,
                 MAX_BATCH,
             ),
         )
         rows = cur.fetchall() or []
     return rows
-
 
 def insert_log(conn, email: str, wishlist_id: int, campaign_key: str):
     sql = f"""
@@ -403,19 +414,17 @@ def insert_log(conn, email: str, wishlist_id: int, campaign_key: str):
           campaign_key = VALUES(campaign_key),
           sent_at      = VALUES(sent_at)
     """
-    with conn.cursor() as cur:
+    with conn.cursor(dictionary=True) as cur:
         cur.execute(sql, (email.lower().strip(), wishlist_id, campaign_key))
-
 
 # -----------------------
 # Main
 # -----------------------
 
 def main():
-
     # Ventana de trabajo
     start_utc, end_utc, mode = compute_window()
-    #print(f"[DEBUG] Ventana UTC ({mode}): {start_utc:%Y-%m-%d %H:%M:%S}  ->  {end_utc:%Y-%m-%d %H:%M:%S}")
+    # print(f"[DEBUG] Ventana UTC ({mode}): {start_utc:%Y-%m-%d %H:%M:%S}  ->  {end_utc:%Y-%m-%d %H:%M:%S}")
 
     # Carga plantilla
     try:
@@ -427,6 +436,14 @@ def main():
     # Conexión DB
     try:
         conn = mysql_conn()
+        # DEBUG arranque (puedes quitar cuando todo quede estable)
+        print("[BOOT] cwd:", os.getcwd())
+        print("[BOOT] script:", __file__)
+        print("[BOOT] DB_USER:", DB_USER)
+        print("[BOOT] DB_NAME:", DB_NAME)
+        print("[BOOT] DB_SOCKET:", DB_SOCKET)
+        print("[BOOT] SEND_EMAILS:", os.getenv("SEND_EMAILS"))
+        print("[BOOT] STAGE/TARGET/WINDOW:", STAGE, TARGET_HOURS, WINDOW_TOLERANCE_H)
     except Exception as e:
         print(logsafe(f"[ERROR] Conectando MySQL: {e}"))
         sys.exit(3)
@@ -434,6 +451,7 @@ def main():
     try:
         # Selección
         rows = select_candidates(conn, start_utc, end_utc)
+        print(f"[DEBUG] candidatos encontrados: {len(rows)}")
 
         if not rows:
             print("No hay destinatarios en la ventana de esta etapa.")
@@ -453,7 +471,7 @@ def main():
                 try:
                     message_id = send_email(email, SUBJECT, html)
                     insert_log(conn, email, wishlist_id, CAMPAIGN_KEY)
-                    print(logsafe(f"[ENVIADO] {email} (wishlist {wishlist_id})"))
+                    print(logsafe(f"[ENVIADO] {email} (wishlist {wishlist_id}) msgid={message_id}"))
                     sent += 1
                 except Exception as e:
                     print(logsafe(f"[ERROR] Enviando a {email} (wishlist {wishlist_id}): {e}"))
@@ -467,12 +485,11 @@ def main():
         except Exception:
             pass
 
-
 if __name__ == "__main__":
     try:
         main()
         sys.exit(0)
-    except SystemExit as se:
+    except SystemExit:
         raise
     except Exception as e:
         print(logsafe(f"[FATAL] {e}"))
